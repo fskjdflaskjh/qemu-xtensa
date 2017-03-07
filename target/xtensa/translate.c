@@ -1658,9 +1658,15 @@ static void translate_ldst(DisasContext *dc, const uint32_t arg[],
             gen_load_store_alignment(dc, par[0] & MO_SIZE, addr, par[1]);
         }
         if (par[2]) {
+            if (par[1]) {
+                tcg_gen_mb(TCG_BAR_STRL | TCG_MO_ALL);
+            }
             tcg_gen_qemu_st_tl(cpu_R[arg[0]], addr, dc->cring, par[0]);
         } else {
             tcg_gen_qemu_ld_tl(cpu_R[arg[0]], addr, dc->cring, par[0]);
+            if (par[1]) {
+                tcg_gen_mb(TCG_BAR_LDAQ | TCG_MO_ALL);
+            }
         }
         tcg_temp_free(addr);
     }
@@ -1815,6 +1821,12 @@ static void translate_mac16(DisasContext *dc, const uint32_t arg[],
         tcg_temp_free(vaddr);
         tcg_temp_free(mem32);
     }
+}
+
+static void translate_memw(DisasContext *dc, const uint32_t arg[],
+                           const uint32_t par[])
+{
+    tcg_gen_mb(TCG_BAR_SC | TCG_MO_ALL);
 }
 
 static void translate_minmax(DisasContext *dc, const uint32_t arg[],
@@ -2191,7 +2203,6 @@ static void translate_s32c1i(DisasContext *dc, const uint32_t arg[],
                              const uint32_t par[])
 {
     if (gen_window_check2(dc, arg[0], arg[1])) {
-        TCGLabel *label = gen_new_label();
         TCGv_i32 tmp = tcg_temp_local_new_i32();
         TCGv_i32 addr = tcg_temp_local_new_i32();
         TCGv_i32 tpc;
@@ -2202,13 +2213,18 @@ static void translate_s32c1i(DisasContext *dc, const uint32_t arg[],
 
         tpc = tcg_const_i32(dc->pc);
         gen_helper_check_atomctl(cpu_env, tpc, addr);
-        tcg_gen_qemu_ld32u(cpu_R[arg[0]], addr, dc->cring);
-        tcg_gen_brcond_i32(TCG_COND_NE, cpu_R[arg[0]],
-                           cpu_SR[SCOMPARE1], label);
+        if (parallel_cpus) {
+            gen_helper_exit_atomic(cpu_env);
+            dc->is_jmp = DISAS_UPDATE;
+        } else {
+            TCGLabel *label = gen_new_label();
 
-        tcg_gen_qemu_st32(tmp, addr, dc->cring);
-
-        gen_set_label(label);
+            tcg_gen_qemu_ld32u(cpu_R[arg[0]], addr, dc->cring);
+            tcg_gen_brcond_i32(TCG_COND_NE, cpu_R[arg[0]],
+                               cpu_SR[SCOMPARE1], label);
+            tcg_gen_qemu_st32(tmp, addr, dc->cring);
+            gen_set_label(label);
+        }
         tcg_temp_free(tpc);
         tcg_temp_free(addr);
         tcg_temp_free(tmp);
@@ -2822,7 +2838,7 @@ static const XtensaOpcodeOps core_ops[] = {
         .translate = translate_extui,
     }, {
         .name = "extw",
-        .translate = translate_nop,
+        .translate = translate_memw,
     }, {
         .name = "hwwdtlba",
         .translate = translate_ill,
@@ -2939,7 +2955,7 @@ static const XtensaOpcodeOps core_ops[] = {
         .par = (const uint32_t[]){TCG_COND_GEU},
     }, {
         .name = "memw",
-        .translate = translate_nop,
+        .translate = translate_memw,
     }, {
         .name = "min",
         .translate = translate_minmax,

@@ -2165,6 +2165,8 @@ int page_unprotect(target_ulong address, uintptr_t pc)
 {
     unsigned int prot;
     bool current_tb_invalidated;
+    bool org_writable;
+    int tb_status = 0;
     PageDesc *p;
     target_ulong host_start, host_end, addr;
 
@@ -2179,9 +2181,10 @@ int page_unprotect(target_ulong address, uintptr_t pc)
         return 0;
     }
 
+    org_writable = (p->flags & PAGE_WRITE_ORG) != 0;
     /* if the page was really writable, then we change its
        protection back to writable */
-    if ((p->flags & PAGE_WRITE_ORG) && !(p->flags & PAGE_WRITE)) {
+    if (org_writable && !(p->flags & PAGE_WRITE)) {
         host_start = address & qemu_host_page_mask;
         host_end = host_start + qemu_host_page_size;
 
@@ -2208,8 +2211,13 @@ int page_unprotect(target_ulong address, uintptr_t pc)
         /* If current TB was invalidated return to main loop */
         return current_tb_invalidated ? 2 : 1;
     }
+    if (org_writable && pc != 0) {
+        tb_lock();
+        tb_status = tb_find_pc(pc) ? 1 : 2;
+        tb_unlock();
+    }
     mmap_unlock();
-    return 0;
+    return tb_status;
 }
 #endif /* CONFIG_USER_ONLY */
 
